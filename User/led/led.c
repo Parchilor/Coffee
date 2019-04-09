@@ -1,13 +1,24 @@
 #include "main.h"
 #include "led.h"
 
-uint8_t chg_cnt = 0;
 extern uint8_t mt_cnt;
+extern uint16_t pwr_down_cnt;
+extern uint8_t system_state;
+extern uint8_t system_prev_state;
+
+uint8_t chg_cnt = 0;
+
+static uint8_t toggle_flag = 0;
+
 static uint8_t Get_VolLevel(void)
 {
 	int32_t value = ADC_ReadValue(1);
  	int8_t level = -1;
-	if((value >= 2909) && (value < 3021))
+	if(value < 2920)
+	{
+		level = 0x00;
+	}
+	else if((value >= 2920) && (value < 3021))
 	{
 		level = 0x01;
 	}
@@ -50,7 +61,7 @@ void LED_Mode_Energy(uint8_t Reserve)
 {
 	uint8_t i, temp = 0;
 	int8_t level = Get_VolLevel();
-	if(level != -1)
+	if(level > 0)
 	{
 		for(i = 0; i < level; i++)
 		{
@@ -58,6 +69,30 @@ void LED_Mode_Energy(uint8_t Reserve)
 		}
 		LED_SetLight(0, temp);
 	}
+	else if(level == 0)
+	{
+		pwr_down_cnt++;
+		if(toggle_flag == 0)
+		{
+			toggle_flag = 1;
+			LED_LightOff();
+		}
+		else
+		{
+			toggle_flag = 0;
+			LED_LightOn();
+		}
+		if((pwr_down_cnt >= 6) && (toggle_flag == 0))
+		{
+			system_prev_state = system_state;
+			system_state = 0x00;
+		}
+	}
+	else
+	{
+		/* code */
+	}
+	
 }
 
 void LED_Mode_Charging(uint8_t Reserve)

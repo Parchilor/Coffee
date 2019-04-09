@@ -11,7 +11,6 @@
 #define KEY_PWRUP		2
 #define KEY_UP			3
 
-uint8_t system_state = SYSTEM_PWR_OFF;
 
 extern uint32_t jiffies;
 extern uint8_t motor_state;
@@ -31,9 +30,13 @@ uint16_t motor_cnt = 0;
 uint8_t motor_err = 0;
 uint8_t motor_prev_state = MT_STATE_IDLE;
 
-int32_t vbat_value = 0;
+int32_t motor_adc_value = 0;
+int32_t vbat_adc_value = 0;
 
 uint8_t chg_state[2] = {0};
+uint8_t system_state = SYSTEM_PWR_OFF;
+uint8_t system_prev_state = SYSTEM_PWR_OFF;
+uint16_t pwr_down_cnt = 0;
 
 uint8_t test_idx = 1;
 uint8_t test_btn_cnt = 1;
@@ -59,7 +62,7 @@ void main(void)
 	// chg_state[1] = 0x01;
 	if(!(chg_state[0] & chg_state[1]))
 	{
-		IO_STATE_TOGGLE(PWR_HOLD);
+		IO_STATE_HI(PWR_HOLD);
 		system_state = SYSTEM_USB_ON;
 		key_down = 0;
 	}
@@ -73,34 +76,79 @@ void main(void)
 		if(prev_mask != jiffies)
 		{
 			prev_mask = jiffies;
+			if((prev_mask % 3 == 0) && (motor_prev_state & (MT_STATE_CCW | MT_STATE_CW)))
+			{
+
+				motor_adc_value = ADC_ReadValue(0);
+				if(motor_adc_value > 1024)
+				{
+					motor_prev_state = motor_state;
+					motor_state = MT_STATE_STOP;
+				}
+				if(motor_adc_value <= 1024)
+				{
+					motor_prev_state = motor_state;
+					motor_state = MT_STATE_CCW;
+				}
+			}
 			if(prev_mask % 6 == 0)
 			{
 				// Flash LEDs
 				LED_Frame_Send();
+				if(system_prev_state != system_state)
+				{
+					system_prev_state = system_state;
+					if(system_state == SYSTEM_USB_ON)
+					{
+						IO_STATE_HI(PWR_HOLD);
+						key_down = KEY_UP;
+						LED_LightOff();
+						led_mode[0](test_idx);
+					}
+					else if(system_state == SYSTEM_PWR_ON)
+					{
+						// 延时开机完成
+						IO_STATE_HI(PWR_HOLD);
+						key_down = KEY_UP;
+						LED_LightOff();
+						led_mode[0](test_idx);
+					}
+					else if(system_state == SYSTEM_PWR_OFF)
+					{
+						key_down_cnt = 0;
+						key_down = KEY_UP;
+						pwr_down_cnt = 0;
+						Motor_STOP();
+						LED_LightOff();
+						IO_STATE_LO(PWR_HOLD);
+					}
+					else
+					{
+						/* code */
+					}
+				}
+				
 			}
 			// End of Flash LEDs
-			if(prev_mask % 5 == 0)
+			if((prev_mask % 100 == 0) && (system_state != SYSTEM_PWR_OFF) && (motor_state == MT_STATE_IDLE))
 			{
 				/* Check Charging */
-#if 0
 				chg_state[0] = IO_STATE_READ(CHG);
 				chg_state[1] = IO_STATE_READ(CHG_DOWN);
-				// chg_state[0] = 0x00;
-				// chg_state[1] = 0x01;
-				if(!(chg_state[0] & chg_state[1]))
+				if((system_state != SYSTEM_USB_ON) && !(chg_state[0] & chg_state[1]))
 				{
+					system_prev_state = system_state;
 					system_state = SYSTEM_USB_ON;
+					// IO_STATE_HI(PWR_HOLD);
 				}
-#else
-				if(system_state != test_idx)
+				else if((system_state == SYSTEM_USB_ON) && (chg_state[0] & chg_state[1]))
 				{
-					test_idx = system_state;
-					chg_cnt = 0;
-					mt_cnt = 0;
+					system_prev_state = system_state;
+					system_state = SYSTEM_PWR_ON;
+					// IO_STATE_HI(PWR_HOLD);
 				}
-#endif
 			}
-			if(prev_mask % 3 == 0) /* Key Check 15ms per times */
+			if(prev_mask % 6 == 0) /* Key Check 15ms per times */
 			{
 				// Button Control
 				if(IO_STATE_READ(PWR_SW) == 1 && key_down == 0)
@@ -112,52 +160,32 @@ void main(void)
 					if(IO_STATE_READ(PWR_SW) == 1)
 					{
 						key_down_cnt++;
-						if((key_down_cnt == 80) && (system_state == SYSTEM_PWR_ON))
+						if((key_down_cnt == 40) && (system_state == SYSTEM_PWR_ON))
 						{
 							// /* 长按操作 假装关机 */
 							// system_state = SYSTEM_PWR_OFF;
 							// 设置好标志，关灯关电机
-							key_down_cnt = 0;
-							key_down = KEY_UP;
+							system_prev_state = system_state;
 							system_state = SYSTEM_PWR_OFF;
-							LED_LightOff();
-							Motor_STOP();
-							IO_STATE_TOGGLE(PWR_HOLD);
 						}
 					}
 					else
 					{
-						if(key_down_cnt < 80 && (system_state == SYSTEM_PWR_ON | SYSTEM_USB_ON))
+						if(key_down_cnt < 40 && (system_state == SYSTEM_PWR_ON | SYSTEM_USB_ON))
 						{
-#if 1
 							// 短按操作
-							if(motor_state & MT_STATE_IDLE)
+							if(motor_state == MT_STATE_IDLE)
 							{
 								motor_state = MT_STATE_CW;
 							}
-							else if(motor_state & (MT_STATE_CW | MT_STATE_CCW))
+							else if(motor_state & (MT_STATE_CW | MT_STATE_CCW | MT_STATE_DELAY))
 							{
 								motor_state = MT_STATE_CCW;
 							}
-							else if(motor_state & (MT_STATE_STOP | MT_STATE_DELAY))
+							else if(motor_state & (MT_STATE_STOP))
 							{
 
 							}
-#else
-							if(test_btn_cnt == 0)
-							{
-								system_state = SYSTEM_PWR_ON;
-							}
-							else if(test_btn_cnt == 1)
-							{
-								motor_state = MT_STATE_CW;
-							}
-							
-							if(++test_btn_cnt > 1)
-							{
-								test_btn_cnt = 0;
-							}
-#endif
 						}
 						key_down_cnt = 0;
 						key_down = 0;
@@ -170,14 +198,10 @@ void main(void)
 					{
 						key_down = KEY_UP;
 					}
-					else if((key_down_cnt >= 80) && (system_state == SYSTEM_PWR_OFF))
+					else if((key_down_cnt >= 40) && (system_state == SYSTEM_PWR_OFF))
 					{
-						// 延时开机完成
-						IO_STATE_TOGGLE(PWR_HOLD);
+						system_prev_state = system_state;
 						system_state = SYSTEM_PWR_ON;
-						key_down = KEY_UP;
-						LED_LightOff();
-						led_mode[0](test_idx);
 					}
 				}
 				else if(key_down == KEY_UP)
@@ -215,19 +239,19 @@ void main(void)
 			else if(motor_state == MT_STATE_CW && motor_err == 0)
 			{
 				Motor_CW(MOTOR_DIR);
-				motor_prev_state = MT_STATE_CW;
+				motor_prev_state = motor_state;
 				motor_state = MT_STATE_DELAY;
 			}
 			else if(motor_state == MT_STATE_CCW && motor_err == 0)
 			{
 				Motor_CCW(MOTOR_DIR);
-				motor_prev_state = MT_STATE_CCW;
+				motor_prev_state = motor_state;
 				motor_state = MT_STATE_DELAY;
 			}
 			else if(motor_state == MT_STATE_STOP && motor_err == 0)
 			{
 				Motor_STOP();
-				motor_prev_state = MT_STATE_IDLE;
+				motor_prev_state = motor_state;
 				motor_state = MT_STATE_IDLE;
 				motor_cnt = 0;
 				chg_cnt = 0;
@@ -239,7 +263,7 @@ void main(void)
 				{
 					if(motor_cnt++ >= 1000)
 					{
-						motor_prev_state = MT_STATE_DELAY;
+						motor_prev_state = motor_state;
 						motor_state = MT_STATE_CCW;
 						motor_cnt = 0;
 					}
@@ -248,7 +272,7 @@ void main(void)
 				{
 					if(motor_cnt++ >= 50)
 					{
-						motor_prev_state = MT_STATE_DELAY;
+						motor_prev_state = motor_state;
 						motor_state = MT_STATE_STOP;
 						motor_cnt = 0;
 					}
@@ -270,6 +294,18 @@ void main(void)
 			{
 				// LED Control
 				LED_Frame_Send();
+				if(pwr_state == 1)
+				{
+					key_down_cnt = 0;
+					key_down = KEY_UP;
+					motor_err = 0;
+					motor_state = MT_STATE_IDLE;
+					motor_prev_state = MT_STATE_IDLE;
+					system_state = SYSTEM_PWR_OFF;
+					Motor_STOP();
+					LED_LightOff();
+					IO_STATE_LO(PWR_HOLD);
+				}
 			}
 			if(prev_mask % 15 == 0)
 			{
